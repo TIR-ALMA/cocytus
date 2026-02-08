@@ -28,7 +28,7 @@ BOOL FileGetSize(HANDLE FileHandle, PDWORD FileSize)
 	if (!FileGetInfo(FileHandle, &Info))
 		return FALSE;
 
-	*FileSize = Info.AllocationSize.LowPart;
+	*FileSize = (DWORD)Info.EndOfFile.LowPart; // Исправлено: используем EndOfFile вместо AllocationSize
 	return TRUE;
 }
 
@@ -50,7 +50,7 @@ BOOL FileOpen(HANDLE* FileHandle, CONST LPWSTR Path, ACCESS_MASK AccessMask, ULO
 	OA.ObjectName = &US;
 	OA.Attributes = OBJ_CASE_INSENSITIVE;
 
-	Status = API(NtCreateFile(FileHandle, AccessMask | SYNCHRONIZE, &OA, &IO, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE, CreateDisposition, FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0));
+	Status = API(NtCreateFile)(FileHandle, AccessMask | SYNCHRONIZE, &OA, &IO, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE, CreateDisposition, FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0); // Добавлен оператор API()
 
 	if (NT_SUCCESS(Status))
 		bStatus = TRUE;
@@ -62,7 +62,8 @@ BOOL FileWrite(HANDLE FileHandle, CONST LPVOID Buffer, DWORD Length)
 {
 	NTSTATUS		Status;
 	IO_STATUS_BLOCK IO;
-	Status = API(NtWriteFile)(FileHandle, NULL, NULL, NULL, &IO, &Buffer, Length, NULL, NULL);
+	
+	Status = API(NtWriteFile)(FileHandle, NULL, NULL, NULL, &IO, Buffer, Length, NULL, NULL); // Убраны лишние &
 	if (NT_SUCCESS(Status))
 		return TRUE;
 
@@ -80,12 +81,13 @@ BOOL FileRead(HANDLE FileHandle, LPVOID* Buffer, DWORD Length, PDWORD ReadLength
 	if ((*Buffer = Malloc(Length)) == 0)
 		return FALSE;
 
-	if ( (FileHandle, 0, 0, 0, &IO, *Buffer, Length, &LI, 0) >= 0)
+	if (API(NtReadFile)(FileHandle, 0, 0, 0, &IO, *Buffer, Length, &LI, 0) >= 0) // Исправлен вызов функции
 	{
-		*ReadLength = IO.Information;
+		*ReadLength = (DWORD)IO.Information;
 		return TRUE;
 	}
 
+	Free(*Buffer); // Освобождение памяти при ошибке
 	return FALSE;
 }
 
@@ -93,10 +95,17 @@ BOOL FileWriteBuffer(CONST LPWSTR Path, CONST LPVOID Buffer, DWORD Length, BOOL 
 {
 	BOOL	Status = FALSE;
 	HANDLE	FileHandle;
+	ULONG	CreateDisposition = Append ? FILE_OPEN_IF : FILE_OVERWRITE_IF; // Исправлено для корректного append
 
-	if (!FileOpen(&FileHandle, Path, GENERIC_WRITE, FILE_OPEN_IF))
-		return Status;
+	if (!FileOpen(&FileHandle, Path, GENERIC_WRITE, CreateDisposition))
+		return FALSE; // Исправлено: возвращаем FALSE, а не Status
 
+	if (Append) { // Для append устанавливаем указатель в конец файла
+		LARGE_INTEGER li;
+		li.QuadPart = 0;
+		API(NtSetInformationFile)(FileHandle, &IO_STATUS_BLOCK{}, &li, sizeof(li), FileEndOfFileInformation);
+	}
+	
 	Status = FileWrite(FileHandle, Buffer, Length);
 	API(NtClose)(FileHandle);
 
@@ -111,12 +120,17 @@ BOOL FileReadBuffer(CONST LPWSTR Path, LPVOID* Buffer, PDWORD Length)
 	DWORD  FileSize;
 
 	if (!FileOpen(&FileHandle, Path, GENERIC_READ, FILE_OPEN))
-		return Status;
+		return FALSE; // Исправлено: возвращаем FALSE, а не Status
 
 	if (!FileGetSize(FileHandle, &FileSize))
-		return Status;
+	{
+		API(NtClose)(FileHandle);
+		return FALSE; // Исправлено: закрываем файл и возвращаем FALSE
+	}
 
 	Status = FileRead(FileHandle, Buffer, FileSize, Length);
+	API(NtClose)(FileHandle); // Исправлено: закрытие файла
+
 	return Status;
 }
 
@@ -144,6 +158,12 @@ BOOL FileCreateDirectory(CONST LPWSTR Path)
 		bStatus = TRUE;
 		API(NtClose)(Handle);
 	}
+	else
+	{
+		// Если директория уже существует, это тоже успех
+		if (Status == STATUS_OBJECT_NAME_COLLISION)
+			bStatus = TRUE;
+	}
 
 	return bStatus;
 }
@@ -170,35 +190,31 @@ BOOL FileDelete(CONST LPWSTR Path)
 BOOL FileCopy(CONST LPWSTR OriginalPath, CONST LPWSTR NewPath, BOOL DeleteOriginal)
 {
 	BOOL	Status	 = FALSE;
-	LPVOID	File;
-	DWORD	FileSize;
+	LPVOID	File = NULL; // Инициализировано
+	DWORD	FileSize = 0; // Инициализировано
 
 	if (!FileReadBuffer(OriginalPath, &File, &FileSize))
-		return Status;
+		return FALSE; // Исправлено: возвращаем FALSE
 
-	if (!FileWriteBuffer(NewPath, File, FileSize, TRUE))
-		return Status;
+	if (!FileWriteBuffer(NewPath, File, FileSize, FALSE)) // Исправлено: FALSE для append
+	{
+		Free(File);
+		return FALSE; // Исправлено: освобождаем память и возвращаем FALSE
+	}
 
 	if (DeleteOriginal)
 		FileDelete(OriginalPath);
 
 	Free(File);
 
-	return Status;
+	return TRUE; // Исправлено: возвращаем TRUE при успехе
 }
 
 BOOL IsValidNtPath(const LPWSTR Path)
 {
-	BOOL	Status = FALSE;
-	LPWSTR	Data;
-
-	if ((Data = StringCopyW(Path, 4)) != 0)
-	{
-		Status = StringCompareW(Path, L"\\??\\");
-		Free(Data);
-	}
-
-	return Status;
+	if (!Path || wcslen(Path) < 4) return FALSE; // Проверка на валидность
+	
+	return (wcsncmp(Path, L"\\??\\", 4) == 0); // Исправлено: прямое сравнение
 }
 
 BOOL DosPathToNtPath(LPWSTR* Path)
@@ -208,15 +224,18 @@ BOOL DosPathToNtPath(LPWSTR* Path)
 	if (IsValidNtPath(*Path))
 		return TRUE;
 
-	if (StringConcatW(&NtPath, L"\\??\\") && StringConcatW(&NtPath, *Path))
-	{
-		Free(*Path);
-		*Path = NtPath;
-		return TRUE;
-	}
-
-	if (NtPath != NULL)
-		Free(NtPath);
-
-	return FALSE;
+	LPWSTR prefix = L"\\??\\";
+	size_t prefix_len = wcslen(prefix);
+	size_t path_len = wcslen(*Path);
+	
+	NtPath = (LPWSTR)Malloc((prefix_len + path_len + 1) * sizeof(WCHAR));
+	if (!NtPath) return FALSE;
+	
+	wcscpy_s(NtPath, prefix_len + path_len + 1, prefix);
+	wcscat_s(NtPath, prefix_len + path_len + 1, *Path);
+	
+	Free(*Path);
+	*Path = NtPath;
+	return TRUE;
 }
+

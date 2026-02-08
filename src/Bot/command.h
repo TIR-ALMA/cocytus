@@ -1,8 +1,6 @@
 #ifndef __COMMAND_H__
 #define __COMMAND_H__
 
-#include <windows.h>  // Добавлено для определения VOID, PCHAR
-
 typedef enum
 {
     COMMAND_DL_EXEC     = 0x992c01,
@@ -10,13 +8,13 @@ typedef enum
     COMMAND_LOAD_PLUGIN = 0xbfc330,
     COMMAND_KILL        = 0x2fe86c,
     COMMAND_UNINSTALL   = 0xa2327f,
-    COMMAND_RUN_PAYLOAD = 0x123456
+    COMMAND_RUN_PAYLOAD = 0x123456  // Новая команда
 } COMMANDS;
 
-VOID CommandExecute(
+void CommandExecute(
     COMMANDS Command,
-    PCHAR*   Parameter
+    char**   Parameter
 );
 
-#endif //__COMMAND_H__
+#endif // __COMMAND_H__
 

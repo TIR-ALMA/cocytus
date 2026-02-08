@@ -1,4 +1,3 @@
-А шяс 
 #include <Windows.h>
 #include "file.h"
 #include "crt.h"
